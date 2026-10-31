@@ -4,13 +4,13 @@ HEADER_FORMAT = '!BH'
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
 MSG_CONNECT_PUB = 1
-MSG_CONNACK_SUB = 2
+MSG_CONNECT_SUB = 2
 MSG_CONNACK = 3
 MSG_SUBSCRIBE = 4
 MSG_UNSUBSCRIBE = 5
 
 def empacotar_mensagem(tipo_msg, payload_str=""):
-    payload_bytes = playload_str.encode('utf-8')
+    payload_bytes = payload_str.encode('utf-8')
     tamanho_payload = len(payload_bytes)
     cabecalho_binario = struct.pack(HEADER_FORMAT, tipo_msg, tamanho_payload)
     return cabecalho_binario + payload_bytes
