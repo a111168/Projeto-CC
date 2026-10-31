@@ -1,7 +1,7 @@
 import sys
 
 def ler_configuracao(caminho_ficheiro):
-    chaves_lista = ["peer", "publish", "subscribe", "atualizacao"]
+    chaves_lista = ["publish", "subscribe"]  # Chaves que podem ter múltiplos valores
 
     config = {}
 
