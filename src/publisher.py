@@ -1,5 +1,5 @@
 import socket
-from protocols.subcontrol import empacotar_mensagem, desempacotar_cabecalho, HEADER_SIZE, MSG_CONNECT_PUB, MSG_CONNACK
+from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_PUB, MSG_CONNACK
 
 def iniciar(process_id, config):
     broker_info = config.get('broker_control')
@@ -21,15 +21,15 @@ def iniciar(process_id, config):
         client_socket.sendall(msg_connect)
         
         # 2. Receber a resposta (CONNACK) com a porta de dados UDP
-        header_bytes = client_socket.recv(HEADER_SIZE)
-        tipo, tamanho = desempacotar_cabecalho(header_bytes)
-        
+        tipo, payload = receber_mensagem(client_socket)
         if tipo == MSG_CONNACK:
-            data_port_bytes = client_socket.recv(tamanho)
-            porta_udp_broker = int(data_port_bytes.decode('utf-8'))
-            print(f"[Publisher {process_id}] Sessão estabelecida! Porta UDP do Broker: {porta_udp_broker}")
+            porta_udp_broker = int(payload)
+            print(
+                f"[Publisher {process_id}] Sessão estabelecida "
+                f"Porta UDP do Broker: {porta_udp_broker}"
+            )
         else:
-            print(f"[Erro] Resposta inesperada do Broker: tipo {tipo}")
+            raise ValueError(f"Resposta inesperada do Broker: tipo {tipo}")
             
     except Exception as e:
         print(f"[Erro Publisher] Falha na comunicação com o Broker: {e}")

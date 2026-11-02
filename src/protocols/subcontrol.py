@@ -20,3 +20,18 @@ def desempacotar_cabecalho(bytes_recebidos):
         raise ValueError("Bytes recebidos insuficientes para o cabeçalho")
     tipo_msg, tamanho_payload = struct.unpack(HEADER_FORMAT, bytes_recebidos)
     return tipo_msg, tamanho_payload
+
+def recv_todos(sock, tamanho):
+    dados = bytearray()
+    while len(dados) < tamanho:
+        parte = sock.recv(tamanho - len(dados))
+        if not parte:
+            raise ConnectionError("Ligação TCP terminada")
+        dados.extend(parte)
+    return bytes(dados)
+
+def receber_mensagem(sock):
+    cabecalho = recv_todos(sock, HEADER_SIZE)
+    tipo_msg, tamanho_payload = desempacotar_cabecalho(cabecalho)
+    payload = recv_todos(sock, tamanho_payload)
+    return tipo_msg, payload.decode('utf-8')
