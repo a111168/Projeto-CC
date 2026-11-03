@@ -2,9 +2,13 @@ import socket
 import time
 
 from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_SUB, MSG_CONNACK, MSG_SUBSCRIBE
+from protocols.eventcast import desempacotar_publicacao, MSG_DELIVERY
+from log import registar_publicacao
 
 def iniciar(process_id, config):
+    inicio = time.monotonic()
     broker_info = config.get('broker_control')
+    log_path = config['log']
     if not broker_info:
         print("[Erro Subscriber] broker_control não definido na configuração.")
         return
@@ -53,16 +57,27 @@ def iniciar(process_id, config):
         duration = int(config.get('duration', 45))
         print(f"[Subscriber {process_id}] À espera de publicações UDP...")
         udp_socket.settimeout(1.0)
-        inicio = time.monotonic()
-        while time.monotonic() - inicio < duration:
+        while True:
+            tempo_restante = duration - (time.monotonic() - inicio)
+            if tempo_restante <= 0:
+                break
+            udp_socket.settimeout(min(1.0, tempo_restante))
             try:
                 dados, endereco = udp_socket.recvfrom(65535)
-                print(
-                    f"[Subscriber {process_id}] "
-                    f"Recebeu {len(dados)} bytes UDP de {endereco}"
-                )
+                tipo, qos, seq_num, message_id, topico, conteudo = (desempacotar_publicacao(dados))
+                if tipo == MSG_DELIVERY:
+                    print(
+                        f"[Subscriber {process_id}] Publicação recebida:\n"
+                        f"  Topico: {topico}\n"
+                        f"  Conteudo: {conteudo}\n"
+                        f"  QoS: {qos}\n"
+                        f"  MessageID: {message_id}\n"
+                    )
+                    registar_publicacao(log_path, process_id, topico, message_id)
             except socket.timeout:
                 continue
+            except (ValueError, UnicodeDecodeError) as e:
+                print(f"[Subscriber {process_id}] Mesnsagem inválida: {e}")
         print(f"[Subscriber {process_id}] Tempo terminado")
             
     except Exception as e:

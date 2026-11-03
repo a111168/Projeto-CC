@@ -1,5 +1,9 @@
 import socket
+import time
+
 from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_PUB, MSG_CONNACK
+from protocols.eventcast import empacotar_publicacao, MSG_PUBLISH
+from log import registar_publicacao
 
 def iniciar(process_id, config):
     broker_info = config.get('broker_control')
@@ -11,7 +15,8 @@ def iniciar(process_id, config):
     broker_port = int(broker_port_str)
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
     try:
         print(f"[Publisher {process_id}] A ligar ao Broker em {broker_ip}:{broker_port}...")
         client_socket.connect((broker_ip, broker_port))
@@ -30,9 +35,37 @@ def iniciar(process_id, config):
             )
         else:
             raise ValueError(f"Resposta inesperada do Broker: tipo {tipo}")
-            
+
+        publicacoes=config.get('publish', [])
+        log_path = config['log']
+        message_id = 0
+
+        start_after = float(config['start_after'])
+        time.sleep(start_after)
+        for publicacao in publicacoes:
+            topico = publicacao['_main']
+            qos = int(publicacao['qos'])
+            count = int(publicacao['count'])
+            rate = float(publicacao['rate'])
+            intervalo = 1.0 / rate 
+
+            for i in range(count):
+                message_id += 1
+                conteudo = f"{20 + i * 0.5:.1f}"
+                mensagem = empacotar_publicacao(MSG_PUBLISH, qos, message_id, message_id, topico, conteudo)
+                udp_socket.sendto(mensagem, (broker_ip, porta_udp_broker))
+                registar_publicacao(log_path, process_id, topico, message_id)
+                print(
+                    f"[Publisher {process_id}] "
+                    f"Publicação {message_id} enviada: "
+                    f"{topico} = {conteudo}"
+                )
+                if i < count - 1:
+                    time.sleep(intervalo)
+
     except Exception as e:
         print(f"[Erro Publisher] Falha na comunicação com o Broker: {e}")
     finally:
         # A ligação fecha após obter a porta, pois o envio de dados será por UDP (Fase 2)
         client_socket.close()
+        udp_socket.close()
