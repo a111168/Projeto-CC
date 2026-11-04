@@ -19,7 +19,7 @@ def iniciar(process_id, config):
 
     try:
         print(f"[Publisher {process_id}] A ligar ao Broker em {broker_ip}:{broker_port}...")
-        client_socket.connect((broker_ip, broker_port))
+        client_socket.connect((broker_ip, broker_port)) #ligação TCP com o broker
         
         # 1. Enviar mensagem de ligação (CONNECT_PUB)
         msg_connect = empacotar_mensagem(MSG_CONNECT_PUB, process_id)
@@ -36,8 +36,8 @@ def iniciar(process_id, config):
         else:
             raise ValueError(f"Resposta inesperada do Broker: tipo {tipo}")
 
-        publicacoes=config.get('publish', [])
-        log_path = config['log']
+        publicacoes=config.get('publish', []) #lista de publicaçoes
+        log_path = config['log'] #caminho do ficheiro para onde vão ser registadas as publicaçoes
         message_id = 0
 
         start_after = float(config['start_after'])
@@ -47,14 +47,17 @@ def iniciar(process_id, config):
             qos = int(publicacao['qos'])
             count = int(publicacao['count'])
             rate = float(publicacao['rate'])
+            if rate <= 0:
+                raise ValueError(f"Taxa de publicação inválida: {rate}")
+
             intervalo = 1.0 / rate 
 
             for i in range(count):
                 message_id += 1
                 conteudo = f"{20 + i * 0.5:.1f}"
-                mensagem = empacotar_publicacao(MSG_PUBLISH, qos, message_id, message_id, topico, conteudo)
-                udp_socket.sendto(mensagem, (broker_ip, porta_udp_broker))
-                registar_publicacao(log_path, process_id, topico, message_id)
+                mensagem = empacotar_publicacao(MSG_PUBLISH, qos, message_id, message_id, topico, conteudo)  #mensagem eventcast
+                udp_socket.sendto(mensagem, (broker_ip, porta_udp_broker))  #enviar por UDP ao broker
+                registar_publicacao(log_path, process_id, topico, message_id) #registar em log
                 print(
                     f"[Publisher {process_id}] "
                     f"Publicação {message_id} enviada: "
@@ -66,6 +69,5 @@ def iniciar(process_id, config):
     except Exception as e:
         print(f"[Erro Publisher] Falha na comunicação com o Broker: {e}")
     finally:
-        # A ligação fecha após obter a porta, pois o envio de dados será por UDP (Fase 2)
         client_socket.close()
         udp_socket.close()

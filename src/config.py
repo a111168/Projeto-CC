@@ -1,7 +1,7 @@
 import sys
 
 def ler_configuracao(caminho_ficheiro):
-    chaves_lista = ["publish", "subscribe"]  # Chaves que podem ter múltiplos valores
+    chaves_lista = ["publish", "subscribe"] 
 
     config = {}
 
@@ -21,6 +21,9 @@ def ler_configuracao(caminho_ficheiro):
 
                     #Separar o valor por espaços para extrair o termo principal e as opções
                     partes = valor_bruto.split()
+                    if not partes:
+                        print(f"[Erro Config] A chave '{chave}' não tem valor.")
+                        sys.exit(1)
 
                     if len(partes) == 1:
                         #Valor simples (ex: bind = 10.0.3.20)

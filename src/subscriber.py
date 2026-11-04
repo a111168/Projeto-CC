@@ -6,9 +6,9 @@ from protocols.eventcast import desempacotar_publicacao, MSG_DELIVERY
 from log import registar_publicacao
 
 def iniciar(process_id, config):
-    inicio = time.monotonic()
-    broker_info = config.get('broker_control')
-    log_path = config['log']
+    inicio = time.monotonic() #inicio do subscriber
+    broker_info = config.get('broker_control') #endereço do broker
+    log_path = config['log'] #caminho do ficheiro log
     if not broker_info:
         print("[Erro Subscriber] broker_control não definido na configuração.")
         return
@@ -16,10 +16,9 @@ def iniciar(process_id, config):
     broker_ip, broker_port_str = broker_info.split(':')
     broker_port = int(broker_port_str)
 
-    # Criar socket UDP para receber as publicações
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.bind(("0.0.0.0", 0))
-    porta_udp_sub = udp_socket.getsockname()[1]
+    porta_udp_sub = udp_socket.getsockname()[1] #qual porta foi atribuida
     print(f"[Subscriber {process_id}] Porta UDP local: {porta_udp_sub}")
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -43,7 +42,7 @@ def iniciar(process_id, config):
         else:
             raise ValueError(f"Resposta inesperada do Broker: tipo {tipo}")
         
-        # 3. Enviar as subscrições iniciais (Lidas da configuração)
+        # 3. Enviar as subscrições iniciais lidas da configuração
         subscricoes = config.get('subscribe', [])
         for sub in subscricoes:
             topico = sub.get('_main', '')
@@ -63,7 +62,7 @@ def iniciar(process_id, config):
                 break
             udp_socket.settimeout(min(1.0, tempo_restante))
             try:
-                dados, endereco = udp_socket.recvfrom(65535)
+                dados, endereco = udp_socket.recvfrom(65535) #recebe datagrama UDP do broker
                 tipo, qos, seq_num, message_id, topico, conteudo = (desempacotar_publicacao(dados))
                 if tipo == MSG_DELIVERY:
                     print(

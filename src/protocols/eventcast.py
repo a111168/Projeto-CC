@@ -1,6 +1,6 @@
 import struct
 
-MSG_PUBLISH = 1
+MSG_PUBLISH = 1 
 MSG_DELIVERY = 2
 
 HEADER_FORMAT = "!BBIQHH"
