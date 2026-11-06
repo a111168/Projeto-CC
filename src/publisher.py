@@ -41,6 +41,10 @@ def iniciar(process_id, config):
         message_id = 0
 
         start_after = float(config['start_after'])
+        drain = float(config['drain'])
+        if drain < 0:
+            raise ValueError(f"Período drain inválido: {drain}")
+
         time.sleep(start_after)
         for publicacao in publicacoes:
             topico = publicacao['_main']
@@ -65,6 +69,8 @@ def iniciar(process_id, config):
                 )
                 if i < count - 1:
                     time.sleep(intervalo)
+
+        time.sleep(drain)
 
     except Exception as e:
         print(f"[Erro Publisher] Falha na comunicação com o Broker: {e}")
