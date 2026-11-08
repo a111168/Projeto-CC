@@ -1,9 +1,82 @@
 import socket
 import time
+import threading
+
+ACK_TIMEOUT = 1.0
+RETRANSMISSION_INTERVAL = 0.1   
 
 from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_PUB, MSG_CONNACK
-from protocols.eventcast import empacotar_publicacao, MSG_PUBLISH
+from protocols.eventcast import empacotar_publicacao, desempacotar_ack, MSG_PUBLISH
 from log import registar_publicacao
+
+def receber_acks(udp_socket, destino_esperado, pendentes, lock, stop_event):
+    udp_socket.settimeout(0.5)
+
+    while not stop_event.is_set():
+        try:
+            dados, endereco = udp_socket.recvfrom(1024)
+            if endereco != destino_esperado:
+                print(f"[Publisher] ACK recebido de endereço inesperado: {endereco}")
+                continue    
+
+            seq_num, message_id = desempacotar_ack(dados)
+
+        except socket.timeout:
+            continue
+
+        except OSError:
+            break
+
+        except ValueError as erro:
+            print(f"[Publisher] ACK inválido: {erro}")
+            continue
+
+        with lock:
+            mensagem = pendentes.get(message_id)
+
+            if mensagem is None:
+                continue
+
+            if mensagem["seq_num"] != seq_num:
+                print(
+                    f"[Publisher] ACK incompatível: "
+                    f"message_id={message_id}, seq_num={seq_num}"
+                )
+                continue
+
+            del pendentes[message_id]
+
+            print(
+                f"[Publisher] ACK recebido: "
+                f"message_id={message_id}, seq_num={seq_num}"
+            )
+
+def retransmitir_publicacoes(
+    udp_socket,
+    destino,
+    pendentes,
+    lock,
+    stop_event,
+):
+    while not stop_event.is_set():
+        agora = time.monotonic()
+        retransmissoes = []
+
+        with lock:
+            for mensagem in pendentes.values():
+                if agora - mensagem["ultimo_envio"] >= ACK_TIMEOUT:
+                    mensagem["ultimo_envio"] = agora
+                    retransmissoes.append(mensagem["dados"])
+
+        for dados in retransmissoes:
+            try:
+                udp_socket.sendto(dados, destino)
+                print("[Publisher] Publicação retransmitida")
+            except OSError as erro:
+                print(f"[Publisher] Erro ao retransmitir publicação: {erro}")
+                return
+
+        stop_event.wait(RETRANSMISSION_INTERVAL)
 
 def iniciar(process_id, config):
     broker_info = config.get('broker_control')
@@ -16,6 +89,12 @@ def iniciar(process_id, config):
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    pendentes = {}
+    pendentes_lock = threading.Lock()
+    stop_acks = threading.Event()
+    thread_acks = None
+    thread_retransmissoes = None
 
     try:
         print(f"[Publisher {process_id}] A ligar ao Broker em {broker_ip}:{broker_port}...")
@@ -33,8 +112,33 @@ def iniciar(process_id, config):
                 f"[Publisher {process_id}] Sessão estabelecida "
                 f"Porta UDP do Broker: {porta_udp_broker}"
             )
+        
         else:
             raise ValueError(f"Resposta inesperada do Broker: tipo {tipo}")
+
+        destino_broker = (broker_ip, porta_udp_broker)
+
+        thread_acks = threading.Thread(
+            target=receber_acks,
+            args=(udp_socket,destino_broker, pendentes, pendentes_lock, stop_acks),
+            daemon=True,
+        )   
+        thread_acks.start()
+
+
+        thread_retransmissoes = threading.Thread(
+            target=retransmitir_publicacoes,
+            args=(
+                udp_socket,
+                destino_broker,
+                pendentes,
+                pendentes_lock,
+                stop_acks,
+            ),
+            daemon=True,
+        )
+        thread_retransmissoes.start()
+
 
         publicacoes=config.get('publish', []) #lista de publicaçoes
         log_path = config['log'] #caminho do ficheiro para onde vão ser registadas as publicaçoes
@@ -59,8 +163,16 @@ def iniciar(process_id, config):
             for i in range(count):
                 message_id += 1
                 conteudo = f"{20 + i * 0.5:.1f}"
-                mensagem = empacotar_publicacao(MSG_PUBLISH, qos, message_id, message_id, topico, conteudo)  #mensagem eventcast
-                udp_socket.sendto(mensagem, (broker_ip, porta_udp_broker))  #enviar por UDP ao broker
+                seq_num = message_id
+
+                mensagem = empacotar_publicacao(MSG_PUBLISH, qos, seq_num, message_id, topico, conteudo)  #mensagem eventcast
+                with pendentes_lock:
+                    pendentes[message_id] = {
+                        "seq_num": seq_num,
+                        "dados": mensagem,
+                        "ultimo_envio": time.monotonic(),
+                    }
+                udp_socket.sendto(mensagem, destino_broker)  #enviar por UDP ao broker
                 registar_publicacao(log_path, process_id, topico, message_id) #registar em log
                 print(
                     f"[Publisher {process_id}] "
@@ -70,10 +182,24 @@ def iniciar(process_id, config):
                 if i < count - 1:
                     time.sleep(intervalo)
 
-        time.sleep(drain)
+        limite_drain = time.monotonic() + drain
+        while time.monotonic() < limite_drain:
+            with pendentes_lock:
+                if not pendentes:
+                    break
+                
+            time.sleep(0.1)
 
     except Exception as e:
         print(f"[Erro Publisher] Falha na comunicação com o Broker: {e}")
     finally:
+        stop_acks.set()
+
+        if thread_acks is not None:
+            thread_acks.join(timeout=1)
+
+        if thread_retransmissoes is not None:
+            thread_retransmissoes.join(timeout=1)
+
         client_socket.close()
         udp_socket.close()
