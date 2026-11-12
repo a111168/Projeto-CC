@@ -1,9 +1,11 @@
 import socket
 import time
 import threading
+import sys
 
 ACK_TIMEOUT = 1.0
 RETRANSMISSION_INTERVAL = 0.1   
+MAX_ACK_WAIT = 10.0
 
 from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_PUB, MSG_CONNACK
 from protocols.eventcast import empacotar_publicacao, desempacotar_ack, MSG_PUBLISH
@@ -51,13 +53,7 @@ def receber_acks(udp_socket, destino_esperado, pendentes, lock, stop_event):
                 f"message_id={message_id}, seq_num={seq_num}"
             )
 
-def retransmitir_publicacoes(
-    udp_socket,
-    destino,
-    pendentes,
-    lock,
-    stop_event,
-):
+def retransmitir_publicacoes(udp_socket,destino,pendentes,lock,stop_event,):
     while not stop_event.is_set():
         agora = time.monotonic()
         retransmissoes = []
@@ -128,13 +124,7 @@ def iniciar(process_id, config):
 
         thread_retransmissoes = threading.Thread(
             target=retransmitir_publicacoes,
-            args=(
-                udp_socket,
-                destino_broker,
-                pendentes,
-                pendentes_lock,
-                stop_acks,
-            ),
+            args=(udp_socket,destino_broker,pendentes,pendentes_lock,stop_acks,),
             daemon=True,
         )
         thread_retransmissoes.start()
@@ -179,6 +169,24 @@ def iniciar(process_id, config):
                     f"Publicação {message_id} enviada: "
                     f"{topico} = {conteudo}"
                 )
+                limite_espera_ack = time.monotonic() + MAX_ACK_WAIT
+                while True:
+                    with pendentes_lock:
+                        confirmado = message_id not in pendentes
+                    if confirmado:
+                        break
+                    if time.monotonic() >= limite_espera_ack:
+                        limite_drain = time.monotonic() + drain
+                        while time.monotonic() < limite_drain:
+                            with pendentes_lock:
+                                confirmado = message_id not in pendentes
+                            if confirmado:
+                                break
+                            time.sleep(0.05)
+                        if not confirmado:
+                            raise TimeoutError(f"Publicação {message_id} não confirmada após o drain")
+                        break
+                    time.sleep(0.05)
                 if i < count - 1:
                     time.sleep(intervalo)
 
@@ -189,9 +197,14 @@ def iniciar(process_id, config):
                     break
                 
             time.sleep(0.1)
+        with pendentes_lock:
+            quantidade_pendentes = len(pendentes)
+        if quantidade_pendentes > 0:
+            raise TimeuoutError(f"O período do drain terminou com {quantidade_pendentes} publicações sem ACK")
 
     except Exception as e:
         print(f"[Erro Publisher] Falha na comunicação com o Broker: {e}")
+        sys.exit(1)
     finally:
         stop_acks.set()
 

@@ -4,7 +4,7 @@ import threading
 import time
 
 from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNACK, MSG_SUBSCRIBE, MSG_CONNECT_SUB, MSG_CONNECT_PUB
-from protocols.eventcast import empacotar_publicacao, desempacotar_publicacao, MSG_PUBLISH, MSG_DELIVERY
+from protocols.eventcast import empacotar_publicacao, desempacotar_publicacao,empacotar_ack, MSG_PUBLISH, MSG_DELIVERY
 
 #Verifica se uma publicação corresponde a uma subscrição
 def corresponde_topico(topico, filtro):
@@ -21,6 +21,8 @@ def receber_publicacao(udp_socket, subscribers):
             dadods, endereco = udp_socket.recvfrom(4096)
             tipo, qos, seq_num, message_id, topico, conteudo = (desempacotar_publicacao(dadods))  #Interpreta a publicação
             if tipo == MSG_PUBLISH:
+                ack = empacotar_ack(seq_num, message_id) #confirma a receção da publicação ao publisher
+                udp_socket.sendto(ack, endereco)
                 print(
                     f"[Broker] Publicacao recebida de {endereco}: "
                     f"Topico={topico}, "
