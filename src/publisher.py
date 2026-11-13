@@ -200,7 +200,7 @@ def iniciar(process_id, config):
         with pendentes_lock:
             quantidade_pendentes = len(pendentes)
         if quantidade_pendentes > 0:
-            raise TimeuoutError(f"O período do drain terminou com {quantidade_pendentes} publicações sem ACK")
+            raise TimeoutError(f"O período do drain terminou com {quantidade_pendentes} publicações sem ACK")
 
     except Exception as e:
         print(f"[Erro Publisher] Falha na comunicação com o Broker: {e}")

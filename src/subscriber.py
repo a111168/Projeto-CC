@@ -2,7 +2,7 @@ import socket
 import time
 
 from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_SUB, MSG_CONNACK, MSG_SUBSCRIBE
-from protocols.eventcast import desempacotar_publicacao, MSG_DELIVERY
+from protocols.eventcast import desempacotar_publicacao, empacotar_ack, MSG_DELIVERY
 from log import registar_publicacao
 
 def iniciar(process_id, config):
@@ -73,6 +73,11 @@ def iniciar(process_id, config):
                         f"  MessageID: {message_id}\n"
                     )
                     registar_publicacao(log_path, process_id, topico, message_id)
+
+                    ack = empacotar_ack(seq_num, message_id)
+                    udp_socket.sendto(ack, endereco)
+
+                    print(f"[Subscriber {process_id}]" f" ACK enviado para MessageID {message_id} (SeqNum {seq_num})")
             except socket.timeout:
                 continue
             except (ValueError, UnicodeDecodeError) as e:
