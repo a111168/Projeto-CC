@@ -7,7 +7,7 @@ MSG_ACK = 3
 HEADER_FORMAT = "!BBIQHH"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
-ACK_HEADER_FORMAT = "!BIQ"
+ACK_HEADER_FORMAT = "!BIQH"
 ACK_HEADER_SIZE = struct.calcsize(ACK_HEADER_FORMAT)
 
 def empacotar_publicacao(tipo, qos, seq_num, message_id, topico, conteudo):
@@ -40,24 +40,31 @@ def desempacotar_publicacao(dados):
     conteudo = dados[fim_topico:].decode("utf-8")
     return tipo, qos, seq_num, message_id, topico, conteudo
 
-def empacotar_ack(seq_num, message_id):
+def empacotar_ack(seq_num, message_id, topico):
+    topico_bytes = topico.encode("utf-8")
+    if len(topico_bytes) > 0xffff:
+        raise ValueError("Tópico demasiado grande")
     return struct.pack(
         ACK_HEADER_FORMAT,
         MSG_ACK,
         seq_num,
-        message_id
-    )
+        message_id,
+        len(topico_bytes),
+    ) + topico_bytes
 
 def desempacotar_ack(dados):
-    if len(dados) != ACK_HEADER_SIZE:
+    if len(dados) < ACK_HEADER_SIZE:
         raise ValueError("Tamanho da mensagem ACK inválido")
 
-    tipo, seq_num, message_id = struct.unpack(
+    tipo, seq_num, message_id, topic_length = struct.unpack(
         ACK_HEADER_FORMAT,
-        dados
+        dados[:ACK_HEADER_SIZE]
     )
 
     if tipo != MSG_ACK:
         raise ValueError(f"Tipo de mensagem ACK inválido: {tipo}")
 
-    return seq_num, message_id
+    if len(dados) != ACK_HEADER_SIZE + topic_length:
+        raise ValueError("Tamanho da mensagem ACK inválido")
+
+    return seq_num, message_id, dados[ACK_HEADER_SIZE:].decode("utf-8")

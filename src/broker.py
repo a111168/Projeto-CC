@@ -3,7 +3,16 @@ import sys
 import threading
 import time
 
-from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNACK, MSG_SUBSCRIBE, MSG_CONNECT_SUB, MSG_CONNECT_PUB
+from protocols.subcontrol import (
+    desempacotar_connect_pub,
+    desempacotar_connect_sub,
+    desempacotar_subscribe,
+    empacotar_connack,
+    receber_mensagem,
+    MSG_CONNECT_PUB,
+    MSG_CONNECT_SUB,
+    MSG_SUBSCRIBE,
+)
 from protocols.eventcast import empacotar_publicacao, desempacotar_publicacao,empacotar_ack,desempacotar_ack, MSG_PUBLISH, MSG_DELIVERY, MSG_ACK
 
 ACK_TIMEOUT = 1.0
@@ -20,11 +29,35 @@ def retransmitir_pendentes(udp_socket, pendentes, pendentes_lock):
         agora = time.monotonic()
         with pendentes_lock:
             for subscriber_id, entregas in pendentes.items():
-                for message_id, entrega in entregas.items():
+                for pending_key, entrega in entregas.items():
                     if agora - entrega["ultimo_envio"] >= ACK_TIMEOUT:
                         udp_socket.sendto(entrega["mensagem"], entrega["destino"])
-                        entrega["utlimo_envio"] = agora
-                        print(f"[Broker] Publicação {message_id} retansmitida para {subscriber_id}")
+                        entrega["ultimo_envio"] = agora
+                        print(f"[Broker] Publicação {pending_key[1]} retansmitida para {subscriber_id}")
+        time.sleep(0.1)
+
+def evict_subscribers(subscribers, pendentes, pendentes_lock, evict_after):
+    while True:
+        agora = time.monotonic()
+        sockets_para_fechar = []
+        with pendentes_lock:
+            for subscriber_id, entregas in list(pendentes.items()):
+                if not entregas or subscriber_id not in subscribers:
+                    continue
+
+                info = subscribers[subscriber_id]
+                instante_relevante = max(
+                    info["ultima_confirmacao"],
+                    info["inicio_pendente"],
+                )
+                if agora - instante_relevante > evict_after:
+                    sockets_para_fechar.append((subscriber_id, info["client_sock"]))
+                    del subscribers[subscriber_id]
+                    del pendentes[subscriber_id]
+
+        for subscriber_id, client_sock in sockets_para_fechar:
+            print(f"[Broker] Subscriber {subscriber_id} expirou; sessão removida.")
+            client_sock.close()
         time.sleep(0.1)
 
 def receber_publicacao(udp_socket, subscribers, pendentes, pendentes_lock):
@@ -34,14 +67,21 @@ def receber_publicacao(udp_socket, subscribers, pendentes, pendentes_lock):
             dados, endereco = udp_socket.recvfrom(4096)
             tipo = dados[0]
             if tipo == MSG_ACK:
-                seq_num, message_id = desempacotar_ack(dados)
-                for subscriber_id, info in list(subscribers.items()):  #identifica o subscriber que enviou o ACK e verifica se a publicação associada está pendente ou não
+                seq_num, message_id, topico = desempacotar_ack(dados)
+                with pendentes_lock:
+                    subscribers_snapshot = list(subscribers.items())
+                for subscriber_id, info in subscribers_snapshot:  #identifica o subscriber que enviou o ACK e verifica se a publicação associada está pendente ou não
                     if (info["ip"], info["porta_udp"]) == endereco:
                         with pendentes_lock:
                             entregas = pendentes.get(subscriber_id, {})
-                            entrega = entregas.get(message_id)
-                            if entrega is not None and entrega["seq_num"] == seq_num:
-                                del entregas[message_id]
+                            entrega = entregas.get((topico, message_id))
+                            if (subscribers.get(subscriber_id) is info
+                                    and entrega is not None
+                                    and entrega["seq_num"] == seq_num):
+                                del entregas[(topico, message_id)]
+                                subscribers[subscriber_id]["ultima_confirmacao"] = time.monotonic()
+                                if not entregas:
+                                    subscribers[subscriber_id]["inicio_pendente"] = None
                                 confirmado = True
                             else:
                                 confirmado = False
@@ -53,7 +93,7 @@ def receber_publicacao(udp_socket, subscribers, pendentes, pendentes_lock):
                 continue
             tipo, qos, seq_num, message_id, topico, conteudo = (desempacotar_publicacao(dados))  #Interpreta a publicação
             if tipo == MSG_PUBLISH:
-                ack = empacotar_ack(seq_num, message_id) #confirma a receção da publicação ao publisher
+                ack = empacotar_ack(seq_num, message_id, topico) #confirma a receção da publicação ao publisher
                 udp_socket.sendto(ack, endereco)
                 print(
                     f"[Broker] Publicacao recebida de {endereco}: "
@@ -62,15 +102,20 @@ def receber_publicacao(udp_socket, subscribers, pendentes, pendentes_lock):
                     f"QoS={qos}, "
                     f"MessageID={message_id}"
                 )
-                for subscriber_id, info in list(subscribers.items()): #percorre os subscribers e verifica se as publicações correspondem às suas subscrições
+                with pendentes_lock:
+                    subscribers_snapshot = list(subscribers.items())
+                for subscriber_id, info in subscribers_snapshot: #percorre os subscribers e verifica se as publicações correspondem às suas subscrições
                     for subscricao in info["subscricoes"]:
                         if corresponde_topico(topico, subscricao["topico"]):
                             mensagem = empacotar_publicacao(MSG_DELIVERY, min(qos, subscricao["qos"]), seq_num, message_id, topico, conteudo)
                             destino = (info["ip"], info["porta_udp"])
                             with pendentes_lock:
-                                if subscriber_id not in pendentes:
+                                if subscribers.get(subscriber_id) is not info:
+                                    break
+                                if not pendentes.get(subscriber_id):
                                     pendentes[subscriber_id] = {}
-                                pendentes[subscriber_id][message_id] = {
+                                    subscribers[subscriber_id]["inicio_pendente"] = time.monotonic()
+                                pendentes[subscriber_id][(topico, message_id)] = {
                                     "seq_num": seq_num,
                                     "mensagem": mensagem,
                                     "destino": destino,
@@ -94,31 +139,32 @@ def atender_cliente(client_sock, addr, data_port, subscribers, pendentes, penden
     try:
         tipo_msg, payload_connect = receber_mensagem(client_sock) #recebe a primeira mensagem do cliente e verifica se é publisher ou subscriber
         if tipo_msg == MSG_CONNECT_SUB:  #se for subscriber lê o seu identificador, obtem a porta UDP onde vai receber mensagens e guarda-o
-            partes = payload_connect.split()
-            if len(partes) != 2:
-                raise ValueError("CONNECT_SUB inválido")
+            process_id_cliente, porta_udp_sub = desempacotar_connect_sub(payload_connect)
 
-            process_id_cliente = partes[0]
-            porta_udp_sub = int(partes[1])
-
-            if not 1 <= porta_udp_sub <= 65535:
-                raise ValueError("Porta UDP inválida")
-
-            subscribers[process_id_cliente] = {"ip": addr[0], "porta_udp": porta_udp_sub, "subscricoes": []}
+            agora = time.monotonic()
+            with pendentes_lock:
+                subscribers[process_id_cliente] = {
+                    "ip": addr[0],
+                    "porta_udp": porta_udp_sub,
+                    "subscricoes": [],
+                    "client_sock": client_sock,
+                    "ultima_confirmacao": agora,
+                    "inicio_pendente": None,
+                }
             print(
                 f"[Broker] Subscriber {process_id_cliente} registado: "
                 f"{addr[0]}:{porta_udp_sub}"
             )
 
         elif tipo_msg == MSG_CONNECT_PUB: #se for publisher lê o seu identificador e regista a ligação
-            process_id_cliente = payload_connect
+            process_id_cliente = desempacotar_connect_pub(payload_connect)
             print(f"[Broker] Publisher {process_id_cliente} registado.")
 
         else:
             raise ValueError(f"Tipo de ligação desconhecida: {tipo_msg}")
 
         # broker comunica a porta UDP ao cliente
-        msg_ack = empacotar_mensagem(MSG_CONNACK, data_port)
+        msg_ack = empacotar_connack(int(data_port))
         client_sock.sendall(msg_ack)
         print(
             f"[Broker] Porta UDP {data_port} enviada "
@@ -129,17 +175,10 @@ def atender_cliente(client_sock, addr, data_port, subscribers, pendentes, penden
             tipo, payload = receber_mensagem(client_sock)
 
             if tipo == MSG_SUBSCRIBE and tipo_msg == MSG_CONNECT_SUB: #quando receber mensagem do subscriber guarda a informação necessária
-                partes = payload.split()
-                if len(partes) != 2 or not partes[1].startswith("qos="):
-                    raise ValueError("SUBSCRIBE inválido")
+                topico, qos = desempacotar_subscribe(payload)
 
-                topico = partes[0]
-                qos = int(partes[1].split("=", 1)[1])
-
-                if qos not in (1, 2):
-                    raise ValueError("QoS inválido")
-
-                subscribers[process_id_cliente]["subscricoes"].append({"topico": topico,"qos": qos})
+                with pendentes_lock:
+                    subscribers[process_id_cliente]["subscricoes"].append({"topico": topico,"qos": qos})
                 print(
                     f"[Broker] Subscrição guardada: "
                     f"{process_id_cliente} -> {topico} (QoS {qos})"
@@ -153,11 +192,12 @@ def atender_cliente(client_sock, addr, data_port, subscribers, pendentes, penden
 
     finally:
         if ('tipo_msg' in locals() and tipo_msg == MSG_CONNECT_SUB and 'process_id_cliente' in locals()):
-            if process_id_cliente in subscribers:
-                del subscribers[process_id_cliente]
-                with pendentes_lock:
+            with pendentes_lock:
+                if (process_id_cliente in subscribers
+                        and subscribers[process_id_cliente]["client_sock"] is client_sock):
+                    del subscribers[process_id_cliente]
                     pendentes.pop(process_id_cliente, None)
-                print(f"[Broker] Subscriber {process_id_cliente} removido da lista de subscritores.")
+                    print(f"[Broker] Subscriber {process_id_cliente} removido da lista de subscritores.")
         client_sock.close()
         print(f"[Broker] Sessão TCP com {addr} terminada.")
 
@@ -168,6 +208,7 @@ def iniciar(process_id, config):
     control_port = int(config.get('control_port', 0))
     data_port = str(config.get('data_port', '0'))
     duration = float(config['duration'])
+    evict_after = float(config['evict_after'])
 
     subscribers = {}
     pendentes = {}  #guarda as publicações que falta receber ACK para confirmar
@@ -186,6 +227,12 @@ def iniciar(process_id, config):
     thread_udp.start()
     thread_retransmissao = threading.Thread(target=retransmitir_pendentes, args=(udp_socket, pendentes, pendentes_lock), daemon=True)
     thread_retransmissao.start()
+    thread_eviction = threading.Thread(
+        target=evict_subscribers,
+        args=(subscribers, pendentes, pendentes_lock, evict_after),
+        daemon=True,
+    )
+    thread_eviction.start()
     
     try:
         server_socket.bind((bind_ip, control_port))

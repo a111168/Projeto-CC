@@ -7,11 +7,16 @@ ACK_TIMEOUT = 1.0
 RETRANSMISSION_INTERVAL = 0.1   
 MAX_ACK_WAIT = 10.0
 
-from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_PUB, MSG_CONNACK
+from protocols.subcontrol import (
+    desempacotar_connack,
+    empacotar_connect_pub,
+    receber_mensagem,
+    MSG_CONNACK,
+)
 from protocols.eventcast import empacotar_publicacao, desempacotar_ack, MSG_PUBLISH
 from log import registar_publicacao
 
-def receber_acks(udp_socket, destino_esperado, pendentes, lock, stop_event):
+def receber_acks(udp_socket, destino_esperado, pendentes, ack_events, lock, stop_event):
     udp_socket.settimeout(0.5)
 
     while not stop_event.is_set():
@@ -21,7 +26,7 @@ def receber_acks(udp_socket, destino_esperado, pendentes, lock, stop_event):
                 print(f"[Publisher] ACK recebido de endereço inesperado: {endereco}")
                 continue    
 
-            seq_num, message_id = desempacotar_ack(dados)
+            seq_num, message_id, _ = desempacotar_ack(dados)
 
         except socket.timeout:
             continue
@@ -47,6 +52,9 @@ def receber_acks(udp_socket, destino_esperado, pendentes, lock, stop_event):
                 continue
 
             del pendentes[message_id]
+            evento_ack = ack_events.get(message_id)
+            if evento_ack is not None:
+                evento_ack.set()
 
             print(
                 f"[Publisher] ACK recebido: "
@@ -87,6 +95,7 @@ def iniciar(process_id, config):
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     pendentes = {}
+    ack_events = {}
     pendentes_lock = threading.Lock()
     stop_acks = threading.Event()
     thread_acks = None
@@ -97,13 +106,13 @@ def iniciar(process_id, config):
         client_socket.connect((broker_ip, broker_port)) #ligação TCP com o broker
         
         # 1. Enviar mensagem de ligação (CONNECT_PUB)
-        msg_connect = empacotar_mensagem(MSG_CONNECT_PUB, process_id)
+        msg_connect = empacotar_connect_pub(process_id)
         client_socket.sendall(msg_connect)
         
         # 2. Receber a resposta (CONNACK) com a porta de dados UDP
         tipo, payload = receber_mensagem(client_socket)
         if tipo == MSG_CONNACK:
-            porta_udp_broker = int(payload)
+            porta_udp_broker = desempacotar_connack(payload)
             print(
                 f"[Publisher {process_id}] Sessão estabelecida "
                 f"Porta UDP do Broker: {porta_udp_broker}"
@@ -116,7 +125,7 @@ def iniciar(process_id, config):
 
         thread_acks = threading.Thread(
             target=receber_acks,
-            args=(udp_socket,destino_broker, pendentes, pendentes_lock, stop_acks),
+            args=(udp_socket, destino_broker, pendentes, ack_events, pendentes_lock, stop_acks),
             daemon=True,
         )   
         thread_acks.start()
@@ -156,12 +165,14 @@ def iniciar(process_id, config):
                 seq_num = message_id
 
                 mensagem = empacotar_publicacao(MSG_PUBLISH, qos, seq_num, message_id, topico, conteudo)  #mensagem eventcast
+                evento_ack = threading.Event()
                 with pendentes_lock:
                     pendentes[message_id] = {
                         "seq_num": seq_num,
                         "dados": mensagem,
                         "ultimo_envio": time.monotonic(),
                     }
+                    ack_events[message_id] = evento_ack
                 udp_socket.sendto(mensagem, destino_broker)  #enviar por UDP ao broker
                 registar_publicacao(log_path, process_id, topico, message_id) #registar em log
                 print(
@@ -169,24 +180,13 @@ def iniciar(process_id, config):
                     f"Publicação {message_id} enviada: "
                     f"{topico} = {conteudo}"
                 )
-                limite_espera_ack = time.monotonic() + MAX_ACK_WAIT
-                while True:
-                    with pendentes_lock:
-                        confirmado = message_id not in pendentes
-                    if confirmado:
-                        break
-                    if time.monotonic() >= limite_espera_ack:
-                        limite_drain = time.monotonic() + drain
-                        while time.monotonic() < limite_drain:
-                            with pendentes_lock:
-                                confirmado = message_id not in pendentes
-                            if confirmado:
-                                break
-                            time.sleep(0.05)
-                        if not confirmado:
-                            raise TimeoutError(f"Publicação {message_id} não confirmada após o drain")
-                        break
-                    time.sleep(0.05)
+                confirmado = evento_ack.wait(MAX_ACK_WAIT)
+                if not confirmado:
+                    confirmado = evento_ack.wait(drain)
+                with pendentes_lock:
+                    ack_events.pop(message_id, None)
+                if not confirmado:
+                    raise TimeoutError(f"Publicação {message_id} não confirmada após o drain")
                 if i < count - 1:
                     time.sleep(intervalo)
 

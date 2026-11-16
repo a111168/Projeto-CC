@@ -1,7 +1,13 @@
 import socket
 import time
 
-from protocols.subcontrol import empacotar_mensagem, receber_mensagem, MSG_CONNECT_SUB, MSG_CONNACK, MSG_SUBSCRIBE
+from protocols.subcontrol import (
+    desempacotar_connack,
+    empacotar_connect_sub,
+    empacotar_subscribe,
+    receber_mensagem,
+    MSG_CONNACK,
+)
 from protocols.eventcast import desempacotar_publicacao, empacotar_ack, MSG_DELIVERY
 from log import registar_publicacao
 
@@ -28,13 +34,13 @@ def iniciar(process_id, config):
         client_socket.connect((broker_ip, broker_port))
         
         # 1. Enviar mensagem de ligação (CONNECT_SUB)
-        msg_connect = empacotar_mensagem(MSG_CONNECT_SUB,f"{process_id} {porta_udp_sub}")
+        msg_connect = empacotar_connect_sub(process_id, porta_udp_sub)
         client_socket.sendall(msg_connect)
         
         # 2. Receber a resposta (CONNACK) com a porta de dados UDP
         tipo, payload = receber_mensagem(client_socket)
         if tipo == MSG_CONNACK:
-            porta_udp_broker = int(payload)
+            porta_udp_broker = desempacotar_connack(payload)
             print(
                 f"[Subscriber {process_id}] Sessão estabelecida "
                 f"Porta UDP do Broker: {porta_udp_broker}"
@@ -48,10 +54,9 @@ def iniciar(process_id, config):
             topico = sub.get('_main', '')
             qos = sub.get('qos', '1')
             
-            payload_sub = f"{topico} qos={qos}"
-            msg_sub = empacotar_mensagem(MSG_SUBSCRIBE, payload_sub)
+            msg_sub = empacotar_subscribe(topico, int(qos))
             client_socket.sendall(msg_sub)
-            print(f"[Subscriber {process_id}] Enviou subscrição: {payload_sub}")
+            print(f"[Subscriber {process_id}] Enviou subscrição: {topico} qos={qos}")
 
         duration = int(config.get('duration', 45))
         print(f"[Subscriber {process_id}] À espera de publicações UDP...")
@@ -74,7 +79,7 @@ def iniciar(process_id, config):
                     )
                     registar_publicacao(log_path, process_id, topico, message_id)
 
-                    ack = empacotar_ack(seq_num, message_id)
+                    ack = empacotar_ack(seq_num, message_id, topico)
                     udp_socket.sendto(ack, endereco)
 
                     print(f"[Subscriber {process_id}]" f" ACK enviado para MessageID {message_id} (SeqNum {seq_num})")
