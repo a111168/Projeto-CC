@@ -67,15 +67,19 @@ def retransmitir_publicacoes(udp_socket,destino,pendentes,lock,stop_event,):
         retransmissoes = []
 
         with lock:
-            for mensagem in pendentes.values():
+            for message_id, mensagem in pendentes.items():
                 if agora - mensagem["ultimo_envio"] >= ACK_TIMEOUT:
                     mensagem["ultimo_envio"] = agora
-                    retransmissoes.append(mensagem["dados"])
+                    retransmissoes.append((message_id, mensagem["dados"]))
 
-        for dados in retransmissoes:
+        for message_id, dados in retransmissoes:
             try:
                 udp_socket.sendto(dados, destino)
-                print("[Publisher] Publicação retransmitida")
+                print(
+                    f"[Publisher] Publicação {message_id} não confirmada "
+                    f"pelo broker após {ACK_TIMEOUT} segundos. "
+                    f"Possível perda de publicação ou ACK. A retransmitir..."
+                )
             except OSError as erro:
                 print(f"[Publisher] Erro ao retransmitir publicação: {erro}")
                 return

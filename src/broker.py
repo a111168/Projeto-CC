@@ -33,7 +33,11 @@ def retransmitir_pendentes(udp_socket, pendentes, pendentes_lock):
                     if agora - entrega["ultimo_envio"] >= ACK_TIMEOUT:
                         udp_socket.sendto(entrega["mensagem"], entrega["destino"])
                         entrega["ultimo_envio"] = agora
-                        print(f"[Broker] Publicação {pending_key[1]} retansmitida para {subscriber_id}")
+                        print(
+                            f"[Broker] Publicação {pending_key[1]} não está confirmada "
+                            f"pelo subscriber {subscriber_id} após {ACK_TIMEOUT} segundos."
+                            f"Possível perda de pacote ou ACK. A retransmitir..."
+                        )
         time.sleep(0.1)
 
 def evict_subscribers(subscribers, pendentes, pendentes_lock, evict_after):
