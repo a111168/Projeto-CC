@@ -170,19 +170,51 @@ indicam retransmissões.
 
 ## Testar expulsão de subscriber
 
-No terminal do `sub1`, obter o PID do subscriber:
+Este teste deve ser executado sem `netem`, para distinguir a suspensão do
+subscriber de uma perda de rede. Confirmar também que o `sub1` tem uma duração
+suficientemente longa:
 
-```bash
-ps -eo pid,cmd | grep '[s]ubscriber'
+```ini
+duration = 300
 ```
 
-Suspender o processo:
+Iniciar primeiro o broker. No terminal do `broker1` pode guardar-se o output
+num ficheiro para análise posterior:
 
 ```bash
-sudo kill -STOP <PID>
+./run.sh broker --id b1 --config configs/broker1.conf >/tmp/broker.log 2>&1
 ```
 
-Manter o processo suspenso mais tempo do que o valor `evict_after` do broker, por exemplo:
+No terminal do `sub1`, iniciar apenas uma instância do subscriber em
+background:
+
+```bash
+./run.sh subscriber --id s1 --config configs/sub1.conf &
+```
+
+Obter o PID:
+
+```bash
+pgrep -f subscriber
+```
+
+Deve aparecer apenas um PID. Se aparecerem vários, são execuções anteriores;
+confirmar cada um com `ps` e terminar as instâncias antigas antes de continuar.
+
+No terminal do `pub1`, iniciar o publisher:
+
+```bash
+./run.sh publisher --id p1 --config configs/pub1.conf
+```
+
+Depois, no terminal do `sub1`, suspender o processo, substituindo `<PID>` pelo
+valor obtido:
+
+```bash
+kill -STOP <PID>
+```
+
+o valor `evict_after` do broker:
 
 ```ini
 evict_after = 5
@@ -190,16 +222,32 @@ evict_after = 5
 
 Resultado esperado:
 
-- o broker continua a retransmitir;
-- após `evict_after`, fecha a sessão TCP;
-- remove o subscriber;
-- limpa as entregas pendentes;
-- não envia novas publicações ao subscriber.
+- o broker regista que as publicações não foram confirmadas;
+- o broker retransmite as entregas pendentes;
+- após 5 segundos, regista:
+
+```text
+Subscriber s1 expirou; sessão removida.
+```
+
+- a sessão do subscriber é removida.
+
+O publisher deve continuar a receber os ACKs das publicações do broker. O log
+do subscriber pode conter várias linhas repetidas da mesma publicação, pois as
+retransmissões são permitidas pela política G1.
+
+Para guardar os logs, o broker deve ter sido iniciado com o redirecionamento
+para `/tmp/broker.log`. Consultar:
+
+```bash
+tail -n 50 /tmp/broker.log
+tail -n 30 /tmp/tp2/sub1.log
+```
 
 Retomar, se necessário:
 
 ```bash
-sudo kill -CONT <PID>
+kill -CONT <PID>
 ```
 
 ## Remover perdas
