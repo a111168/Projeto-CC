@@ -3,7 +3,7 @@ import time
 import threading
 import sys
 
-ACK_TIMEOUT = 1.0
+ACK_TIMEOUT = 0.25
 RETRANSMISSION_INTERVAL = 0.1   
 MAX_ACK_WAIT = 10.0
 

@@ -31,6 +31,7 @@ bind = 127.0.0.1
 control_port = 7310
 data_port = 7311
 duration = 30
+evict_after = 5
 EOF
 
 cat > "$work_dir/pub.conf" <<EOF

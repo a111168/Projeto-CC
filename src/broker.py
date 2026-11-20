@@ -15,7 +15,7 @@ from protocols.subcontrol import (
 )
 from protocols.eventcast import empacotar_publicacao, desempacotar_publicacao,empacotar_ack,desempacotar_ack, MSG_PUBLISH, MSG_DELIVERY, MSG_ACK
 
-ACK_TIMEOUT = 1.0
+ACK_TIMEOUT = 0.25
 
 #Verifica se uma publicação corresponde a uma subscrição
 def corresponde_topico(topico, filtro):
