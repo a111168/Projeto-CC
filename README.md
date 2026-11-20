@@ -96,9 +96,6 @@ Com 10 publicações e um subscriber, são esperados 40 datagramas UDP sem perda
 10 ACKs subscriber -> broker
 ```
 
-## Aplicar perdas
-
-Executar `tc netem` no nó cuja saída se pretende perder.
 
 ### Perda publisher -> broker
 
